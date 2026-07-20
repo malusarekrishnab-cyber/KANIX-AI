@@ -137,11 +137,11 @@ def update_memory(memory_update: dict) -> dict:
     return memory
 
 
-def should_extract_memory(user_text: str, jarvis_text: str, api_key: str = "") -> bool:
+def should_extract_memory(user_text: str, kanix_text: str, api_key: str = "") -> bool:
     try:
         from or_client import client
 
-        combined = f"User: {user_text[:300]}\nJarvis: {jarvis_text[:1000]}"
+        combined = f"User: {user_text[:300]}\nJarvis: {kanix_text[:1000]}"
 
         result = client.chat(
             f"Does this conversation contain ANY of the following?\n"
@@ -163,11 +163,11 @@ def should_extract_memory(user_text: str, jarvis_text: str, api_key: str = "") -
         return False
 
 
-def extract_memory(user_text: str, jarvis_text: str, api_key: str = "") -> dict:
+def extract_memory(user_text: str, kanix_text: str, api_key: str = "") -> dict:
     try:
         from or_client import client
 
-        combined = f"User: {user_text[:600]}\nJarvis: {jarvis_text[:300]}"
+        combined = f"User: {user_text[:600]}\nKanix: {kanix_text[:300]}"
 
         raw = client.chat(
             f"Extract ALL memorable personal facts from this conversation. Any language.\n"

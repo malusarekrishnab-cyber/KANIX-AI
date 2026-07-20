@@ -8,7 +8,7 @@ from pathlib import Path
 import sounddevice as sd
 from google import genai
 from google.genai import types
-from ui import JarvisUI
+from ui import kanixUI
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
     should_extract_memory, extract_memory
@@ -66,11 +66,11 @@ def _load_system_prompt() -> str:
     
 _last_memory_input = ""
 
-def _update_memory_async(user_text: str, jarvis_text: str) -> None:
+def _update_memory_async(user_text: str, kanix_text: str) -> None:
     global _last_memory_input
 
     user_text   = (user_text   or "").strip()
-    jarvis_text = (jarvis_text or "").strip()
+    kanix_text = (kanix_text or "").strip()
 
     if len(user_text) < 5 or user_text == _last_memory_input:
         return
@@ -78,9 +78,9 @@ def _update_memory_async(user_text: str, jarvis_text: str) -> None:
 
     try:
         api_key = _get_api_key()
-        if not should_extract_memory(user_text, jarvis_text, api_key):
+        if not should_extract_memory(user_text, kanix_text, api_key):
             return
-        data = extract_memory(user_text, jarvis_text, api_key)
+        data = extract_memory(user_text, kanix_text, api_key)
         if data:
             update_memory(data)
             print(f"[Memory] ✅ {list(data.keys())}")
@@ -447,7 +447,7 @@ TOOL_DECLARATIONS = [
     }
 },
     {
-    "name": "shutdown_jarvis",
+    "name": "shutdown_kanix",
     "description": (
         "Shuts down the assistant completely. "
         "Call this when the user expresses intent to end the conversation, "
@@ -492,9 +492,9 @@ TOOL_DECLARATIONS = [
 ]
 
 
-class JarvisLive:
+class kanixLive :
 
-    def __init__(self, ui: JarvisUI):
+    def __init__(self, ui: kanixUI):
         self.ui             = ui
         self.session        = None
         self.audio_in_queue = None
@@ -683,7 +683,7 @@ class JarvisLive:
             elif name == "flight_finder":
                 r = await loop.run_in_executor(None, lambda: flight_finder(parameters=args, player=self.ui))
                 result = r or "Done."
-            elif name == "shutdown_jarvis":
+            elif name == "shutdown_kanix":
                 self.ui.write_log("SYS: Shutdown requested.")
                 self.speak("Goodbye, sir.")
 
@@ -869,11 +869,11 @@ class JarvisLive:
             await asyncio.sleep(3)
 
 def main():
-    ui = JarvisUI("face.png")
+    ui = kanixUI("face.png")
 
     def runner():
         ui.wait_for_api_key()
-        jarvis = JarvisLive(ui)
+        jarvis = kanixLive (ui)
         try:
             asyncio.run(jarvis.run())
         except KeyboardInterrupt:
