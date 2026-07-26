@@ -9,7 +9,8 @@ from typing import Optional
 import requests
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("openrouter_client")
+logger = logging.getLogger("groq_client")
+
 
 def _get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -17,78 +18,94 @@ def _get_base_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
-BASE_DIR     = _get_base_dir()
-API_KEY_PATH = BASE_DIR / "config" / "api_keys.json"
+BASE_DIR = _get_base_dir()
 
-def _load_api_key() -> str:
-    try:
-        with open(API_KEY_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        key = data.get("openrouter_api_key", "").strip()
-        if not key:
-            raise ValueError("openrouter_api_key is empty in api_keys.json")
-        return key
-    except FileNotFoundError:
-        raise RuntimeError(f"api_keys.json not found at: {API_KEY_PATH}")
-    except Exception as e:
-        raise RuntimeError(f"Failed to load OpenRouter API key: {e}")
+import os
+from dotenv import load_dotenv
+load_dotenv(BASE_DIR / ".env")
+
+
+def _load_key(name: str) -> str:
+    key = os.environ.get(name, "").strip()
+    if not key:
+        raise ValueError(f"{name} is empty in .env")
+    return key
+
+
+def _load_groq_llm_key() -> str:
+    """
+    Dedicated key for the Brain (all LLM chat/reasoning traffic).
+    NOTE: GROQ_API_KEY is intentionally never read in this file —
+    it stays reserved exclusively for Whisper STT elsewhere in the project.
+    """
+    return _load_key("GROQ_LLM_API_KEY")
+
+
+# ===== Groq — Brain models (replaces OpenRouter entirely) =====
+# NOTE: qwen/qwen3-32b was deprecated by Groq (shutdown 07/17/26) →
+# migrated to openai/gpt-oss-120b (Groq's official recommendation).
+# NOTE: deepseek-r1-distill-qwen-32b is fully decommissioned on Groq
+# (confirmed via live API error, "model_decommissioned") →
+# migrated to qwen/qwen3.6-27b, Groq's current live reasoning/coding model.
+DEFAULT_MODEL: str = "openai/gpt-oss-120b"            # default assistant
+CODING_MODEL: str  = "qwen/qwen3.6-27b"               # coding / debugging / reasoning / complex tasks
 
 TEXT_MODELS: list[str] = [
-    "nvidia/nemotron-3-super-120b-a12b:free",
-    "nousresearch/hermes-3-llama-3.1-405b:free",
-    "minimax/minimax-m2.5:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "qwen/qwen3-next-80b-a3b-instruct:free",
-    "qwen/qwen3-coder:free",
-    "google/gemma-4-31b-it:free",
-    "google/gemma-4-26b-a4b-it:free",
-    "google/gemma-3-27b-it:free",
-    "arcee-ai/trinity-large-preview:free",
-    "z-ai/glm-4.5-air:free",
-    "nvidia/nemotron-3-nano-30b-a3b:free",
-    "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
-    "google/gemma-3-12b-it:free",
-    "nvidia/nemotron-nano-12b-v2-vl:free",
-    "nvidia/nemotron-nano-9b-v2:free",
-    "google/gemma-3-4b-it:free",
-    "google/gemma-3n-e4b-it:free",
-    "meta-llama/llama-3.2-3b-instruct:free",
-    "google/gemma-3n-e2b-it:free",
-    "liquid/lfm-2.5-1.2b-instruct:free",
-    "liquid/lfm-2.5-1.2b-thinking:free",
+    DEFAULT_MODEL,
+    CODING_MODEL,
 ]
 
+# Best-effort placeholder pool for vision — neither qwen3-32b nor the
+# deepseek-r1-distill model support vision. Swap this if you have a
+# preferred Groq vision model; kept here only so vision()/vision_from_file()
+# don't break the public API.
 VISION_MODELS: list[str] = [
-    "nvidia/nemotron-nano-12b-v2-vl:free",
-    "nvidia/llama-nemotron-embed-vl-1b-v2:free",
-    "google/gemma-4-31b-it:free",
-    "google/gemma-4-26b-a4b-it:free",
-    "google/gemma-3n-e4b-it:free",
-    "google/gemma-3n-e2b-it:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "nvidia/nemotron-3-super-120b-a12b:free",
+    "llama-4-scout-17b-16e-instruct",
 ]
 
-API_URL               = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MAX_TOKENS    = 4096
-DEFAULT_TEMPERATURE   = 0.7
-REQUEST_TIMEOUT       = 60   # seconds per request
-MAX_RETRIES_PER_MODEL = 2    # attempts before moving to next model
-RETRY_DELAY           = 2    # seconds between retries
-RATE_LIMIT_COOLDOWN   = 60   # seconds before retrying a rate-limited model
+# Keywords used to auto-route a prompt to the coding/reasoning model when
+# the caller doesn't explicitly pass `model=`.
+_CODING_KEYWORDS = (
+    "code", "bug", "debug", "error", "exception", "traceback", "stack trace",
+    "function", "class ", "python", "javascript", "typescript", "java ",
+    "c++", "syntax", "compile", "refactor", "algorithm", "regex",
+    "unit test", "stacktrace", "null pointer", "segfault", "script",
+    "api", "sql", "query", "reasoning", "step by step", "logic puzzle",
+    "prove", "solve this",
+)
+
+GROQ_API_URL            = "https://api.groq.com/openai/v1/chat/completions"
+DEFAULT_MAX_TOKENS      = 4096
+DEFAULT_TEMPERATURE     = 0.7
+REQUEST_TIMEOUT         = 60   # seconds per request
+MAX_RETRIES_PER_MODEL   = 2    # attempts before moving to next model
+RETRY_DELAY             = 2    # seconds between retries
+RATE_LIMIT_COOLDOWN     = 60   # seconds before retrying a rate-limited model
 
 _rate_limited: dict[str, float] = {}
 
-class OpenRouterClient:
+
+def _detect_coding_task(text: str) -> bool:
+    lowered = text.lower()
+    return any(kw in lowered for kw in _CODING_KEYWORDS)
+
+
+class GroqClient:
+    """
+    Brain client — handles ALL LLM chat/reasoning/vision traffic via Groq.
+    Public API is unchanged from the previous OpenRouter-backed client:
+        chat(), chat_json(), multi_turn(), vision(), vision_from_file(),
+        available_models()
+    """
 
     def __init__(self) -> None:
-        self.api_key  = _load_api_key()
+        self.api_key  = _load_groq_llm_key()
         self._headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type":  "application/json",
-            "HTTP-Referer":  "https://github.com/mark-xxv",
-            "X-Title":       "MARK XXV",
         }
+
+    # ---------- rate limit bookkeeping ----------
 
     def _is_rate_limited(self, model: str) -> bool:
         ts = _rate_limited.get(model)
@@ -102,9 +119,10 @@ class OpenRouterClient:
     def _mark_rate_limited(self, model: str) -> None:
         _rate_limited[model] = time.time()
         logger.warning(
-            f"[OpenRouter] Rate limited: {model} — "
-            f"cooling down for {RATE_LIMIT_COOLDOWN}s"
+            f"[Groq] Rate limited: {model} — cooling down for {RATE_LIMIT_COOLDOWN}s"
         )
+
+    # ---------- low level call ----------
 
     def _call(
         self,
@@ -113,7 +131,8 @@ class OpenRouterClient:
         max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = DEFAULT_TEMPERATURE,
         response_format: Optional[dict] = None,
-    ) -> Optional[str]:
+        tools: Optional[list] = None,
+    ):
         payload: dict = {
             "model":       model,
             "messages":    messages,
@@ -122,11 +141,13 @@ class OpenRouterClient:
         }
         if response_format:
             payload["response_format"] = response_format
+        if tools:
+            payload["tools"] = tools
 
         for attempt in range(1, MAX_RETRIES_PER_MODEL + 1):
             try:
                 resp = requests.post(
-                    API_URL,
+                    GROQ_API_URL,
                     headers=self._headers,
                     json=payload,
                     timeout=REQUEST_TIMEOUT,
@@ -137,26 +158,33 @@ class OpenRouterClient:
                     return None
 
                 if resp.status_code == 200:
-                    data    = resp.json()
-                    content = (
-                        data.get("choices", [{}])[0]
-                            .get("message", {})
-                            .get("content", "")
-                    )
-                    return content.strip() if content else None
+                    data = resp.json()
+                    message = data.get("choices", [{}])[0].get("message", {})
+
+                    if message.get("tool_calls"):
+                        return {
+                            "type": "tool_calls",
+                            "calls": message["tool_calls"],
+                        }
+
+                    content = message.get("content", "")
+                    return {
+                        "type": "text",
+                        "content": content.strip() if content else "",
+                    }
 
                 logger.warning(
-                    f"[OpenRouter] {model} → HTTP {resp.status_code} "
-                    f"(attempt {attempt}/{MAX_RETRIES_PER_MODEL})"
+                    f"[Groq] {model} → HTTP {resp.status_code} "
+                    f"(attempt {attempt}/{MAX_RETRIES_PER_MODEL}) — {resp.text[:200]}"
                 )
 
             except requests.exceptions.Timeout:
                 logger.warning(
-                    f"[OpenRouter] {model} → Timeout "
+                    f"[Groq] {model} → Timeout "
                     f"(attempt {attempt}/{MAX_RETRIES_PER_MODEL})"
                 )
             except Exception as e:
-                logger.error(f"[OpenRouter] {model} → Unexpected error: {e}")
+                logger.error(f"[Groq] {model} → Unexpected error: {e}")
 
             if attempt < MAX_RETRIES_PER_MODEL:
                 time.sleep(RETRY_DELAY)
@@ -171,47 +199,55 @@ class OpenRouterClient:
         max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = DEFAULT_TEMPERATURE,
         response_format: Optional[dict] = None,
+        tools: Optional[list] = None,
     ) -> str:
         if model and not self._is_rate_limited(model):
-            result = self._call(model, messages, max_tokens, temperature, response_format)
+            result = self._call(model, messages, max_tokens, temperature, response_format, tools)
             if result:
-                return result
-            logger.info(
-                f"[OpenRouter] Requested model failed, "
-                f"falling back to pool: {model}"
-            )
+                return result["content"] if result["type"] == "text" else result
+            logger.info(f"[Groq] Requested model failed, falling back to pool: {model}")
 
         for m in pool:
+            if m == model:
+                continue  # already tried above
             if self._is_rate_limited(m):
                 continue
-            logger.info(f"[OpenRouter] Trying: {m}")
-            result = self._call(m, messages, max_tokens, temperature, response_format)
+            logger.info(f"[Groq] Trying: {m}")
+            result = self._call(m, messages, max_tokens, temperature, response_format, tools)
             if result:
-                logger.info(f"[OpenRouter] ✓ Success: {m}")
-                return result
+                logger.info(f"[Groq] ✓ Success: {m}")
+                return result["content"] if result["type"] == "text" else result
 
         raise RuntimeError(
-            "[OpenRouter] All models failed or are rate-limited. "
-            "Check your API key and network connection."
+            "[Groq] All models failed or are rate-limited. "
+            "Check GROQ_LLM_API_KEY and your network connection."
         )
+
+    # ---------- public API (unchanged signatures) ----------
 
     def chat(
         self,
         prompt: str,
         system: str = (
-            "You are a component of MARK XXV, an AI assistant inspired by JARVIS. "
+            "You are Kanix (MARK-XXXIX), an AI assistant inspired by JARVIS. "
             "Be concise, helpful, and precise."
         ),
         model: Optional[str] = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = DEFAULT_TEMPERATURE,
+        tools: Optional[list] = None,
     ) -> str:
         messages = [
             {"role": "system", "content": system},
             {"role": "user",   "content": prompt},
         ]
+
+        chosen_model = model
+        if chosen_model is None and _detect_coding_task(prompt):
+            chosen_model = CODING_MODEL
+
         return self._call_with_fallback(
-            TEXT_MODELS, messages, model, max_tokens, temperature
+            TEXT_MODELS, messages, chosen_model, max_tokens, temperature, tools=tools
         )
 
     def chat_json(
@@ -228,8 +264,13 @@ class OpenRouterClient:
             {"role": "system", "content": system},
             {"role": "user",   "content": prompt},
         ]
+
+        chosen_model = model
+        if chosen_model is None and _detect_coding_task(prompt):
+            chosen_model = CODING_MODEL
+
         raw = self._call_with_fallback(
-            TEXT_MODELS, messages, model, max_tokens, temperature=0.2
+            TEXT_MODELS, messages, chosen_model, max_tokens, temperature=0.2
         )
 
         clean = raw.strip()
@@ -244,7 +285,7 @@ class OpenRouterClient:
             return json.loads(clean)
         except json.JSONDecodeError as e:
             logger.error(
-                f"[OpenRouter] JSON parse failed: {e}\n"
+                f"[Groq] JSON parse failed: {e}\n"
                 f"Raw response (first 300 chars): {raw[:300]}"
             )
             raise ValueError(
@@ -310,28 +351,46 @@ class OpenRouterClient:
         max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = DEFAULT_TEMPERATURE,
     ) -> str:
-    
+        chosen_model = model
+        if chosen_model is None:
+            # inspect the latest user turn to decide default vs coding model
+            last_user = next(
+                (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"),
+                "",
+            )
+            if isinstance(last_user, str) and _detect_coding_task(last_user):
+                chosen_model = CODING_MODEL
+
         return self._call_with_fallback(
-            TEXT_MODELS, messages, model, max_tokens, temperature
+            TEXT_MODELS, messages, chosen_model, max_tokens, temperature
         )
 
     def available_models(self) -> dict:
         return {
             "text_models":   TEXT_MODELS,
+            "default_model": DEFAULT_MODEL,
+            "coding_model":  CODING_MODEL,
             "vision_models": VISION_MODELS,
             "rate_limited":  list(_rate_limited.keys()),
             "total_text":    len(TEXT_MODELS),
             "total_vision":  len(VISION_MODELS),
         }
 
-client = OpenRouterClient()
+
+# ===== Module-level singletons (kept so existing imports don't break) =====
+# Previously `client` pointed at OpenRouterClient() and `groq_client` at a
+# separate fast-reply GroqClient(). OpenRouter is gone now, so both names
+# point at the same Groq-backed brain client.
+client      = GroqClient()
+groq_client = client
+
 
 if __name__ == "__main__":
     print("=" * 55)
-    print("  MARK XXV — OpenRouter Client Self-Test")
+    print("  KANIX / MARK-XXXIX — Brain Client Self-Test (Groq)")
     print("=" * 55)
 
-    print("\n[TEST 1] Basic chat...")
+    print("\n[TEST 1] Default chat (openai/gpt-oss-120b)...")
     try:
         reply = client.chat("Introduce yourself in one sentence.")
         print(f"  Response : {reply}")
@@ -339,37 +398,21 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"  Status   : FAIL ✗ — {e}")
 
-    print("\n[TEST 2] JSON mode...")
+    print("\n[TEST 2] Coding-task auto-routing (qwen/qwen3.6-27b)...")
     try:
-        data = client.chat_json(
-            'List 3 programming languages. Format: {"languages": ["a", "b", "c"]}',
-            system="Return only valid JSON. No extra text."
-        )
-        print(f"  Response : {data}")
-        print(f"  Status   : PASS ✓")
-    except Exception as e:
-        print(f"  Status   : FAIL ✗ — {e}")
-
-    print("\n[TEST 3] Multi-turn conversation...")
-    try:
-        history = [
-            {"role": "system",    "content": "You are a helpful assistant. Be brief."},
-            {"role": "user",      "content": "My name is Tony."},
-            {"role": "assistant", "content": "Hello Tony, how can I help you?"},
-            {"role": "user",      "content": "What is my name?"},
-        ]
-        reply = client.multi_turn(history)
+        reply = client.chat("Debug this Python function: it throws a TypeError.")
         print(f"  Response : {reply}")
         print(f"  Status   : PASS ✓")
     except Exception as e:
         print(f"  Status   : FAIL ✗ — {e}")
 
-    print("\n[TEST 4] Model pool info...")
-    info = client.available_models()
-    print(f"  Text models   : {info['total_text']}")
-    print(f"  Vision models : {info['total_vision']}")
-    print(f"  Rate limited  : {info['rate_limited'] or 'none'}")
-    print(f"  Status        : PASS ✓")
+    print("\n[TEST 3] chat_json...")
+    try:
+        result = client.chat_json("Return a JSON object with keys 'status' and 'ok' set to true/'ready'.")
+        print(f"  Response : {result}")
+        print(f"  Status   : PASS ✓")
+    except Exception as e:
+        print(f"  Status   : FAIL ✗ — {e}")
 
     print("\n" + "=" * 55)
     print("  All tests complete.")

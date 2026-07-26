@@ -1,18 +1,14 @@
-# Python
 __pycache__/
 *.py[cod]
-*.pyo
-
-# Virtual Environment
+*$py.class
 .venv/
+env/
 venv/
-
-# API Keys
+ENV/
+.env
 config/api_keys.json
-
-# OS
-.DS_Store
-Thumbs.db
-
-# VS Code
-.vscode/
+scratch/
+test.mp3
+*.log
+*.wav
+.pytest_cache/

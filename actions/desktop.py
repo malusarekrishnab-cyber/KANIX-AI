@@ -89,13 +89,13 @@ def _execute_generated_code(code: str, player=None) -> str:
     sandbox["__builtins__"]["print"] = lambda *a: output_lines.append(" ".join(str(x) for x in a))
 
     try:
-        exec(compile(code, "<jarvis_desktop>", "exec"), sandbox)
+        exec(compile(code, "<kanix_desktop>", "exec"), sandbox)
         return "\n".join(output_lines) if output_lines else "Done."
     except Exception as e:
         print(f"[Desktop] Exec error: {e}\nCode:\n{code[:300]}")
         return f"Execution error: {e}"
 
-def _ask_gemini_for_desktop_action(task: str) -> str:
+def _ask_llm_for_desktop_action(task: str) -> str:
     from or_client import client
 
     desktop = str(_get_desktop())
@@ -439,16 +439,16 @@ def desktop_control(
             if not actual_task:
                 return "Please describe what you want to do on the desktop."
 
-            print(f"[Desktop] Asking Gemini: {actual_task}")
+            print(f"[Desktop] Asking LLM: {actual_task}")
             if player:
                 player.write_log("[Desktop] Generating action...")
 
-            code = _ask_gemini_for_desktop_action(actual_task)
+            code = _ask_llm_for_desktop_action(actual_task)
             return _execute_generated_code(code, player=player)
 
         else:
             if action:
-                code = _ask_gemini_for_desktop_action(action)
+                code = _ask_llm_for_desktop_action(action)
                 return _execute_generated_code(code, player=player)
             return "No action or task specified."
 

@@ -96,7 +96,6 @@ def _get_opera_executable() -> str | None:
         pass
     return None
 
-
 def _find_browser_executable(prog_id: str) -> tuple:
     """
     Returns (engine_name, exe_path, channel, is_opera).
@@ -139,13 +138,19 @@ def _find_browser_executable(prog_id: str) -> tuple:
                 return "chromium", path, None, False
 
     if "chrome" in prog_id or not prog_id:
-        return "chromium", None, "chrome", False
+        chrome_binaries = os_bins.get("chrome", [])
+        for binary in chrome_binaries:
+            path = shutil.which(binary)
+            if path:
+                print(f"[Browser] 🔍 Default → Chrome found at: {path}")
+                return "chromium", path, None, False
+        print("[Browser] ⚠️ Chrome not found on this system, falling back to Edge")
+        return "chromium", None, "msedge", False
 
     return "chromium", None, None, False
 
 
 class _BrowserThread:
-
     def __init__(self):
         self._loop       = None
         self._thread     = None

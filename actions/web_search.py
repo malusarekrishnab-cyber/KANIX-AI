@@ -10,20 +10,24 @@ def _get_base_dir() -> Path:
 
 
 BASE_DIR        = _get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+import os
+from dotenv import load_dotenv
+load_dotenv(BASE_DIR / ".env")
 
 
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    return os.environ.get("GROQ_API_KEY", "")
+
+def _get_tavily_key() -> str:
+    return os.environ.get("TAVILY_API_KEY", "")
 
 
-def _gemini_search(query: str) -> str:
+def _llm_search(query: str) -> str:
     from google import genai
 
     client   = genai.Client(api_key=_get_api_key())
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="qwen3:8b",
         contents=query,
         config={"tools": [{"google_search": {}}]},
     )
@@ -35,8 +39,45 @@ def _gemini_search(query: str) -> str:
 
     text = text.strip()
     if not text:
-        raise ValueError("Gemini returned an empty response.")
+        raise ValueError("LLM returned an empty response.")
     return text
+
+def _tavily_search(query: str, max_results: int = 5) -> str:
+    import requests
+    api_key = _get_tavily_key()
+    if not api_key:
+        raise ValueError("Tavily API key not found in config.")
+    
+    url = "https://api.tavily.com/search"
+    payload = {
+        "api_key": api_key,
+        "query": query,
+        "search_depth": "advanced",
+        "include_answer": True,
+        "include_images": False,
+        "include_raw_content": False,
+        "max_results": max_results
+    }
+    
+    response = requests.post(url, json=payload, timeout=15)
+    response.raise_for_status()
+    data = response.json()
+    
+    answer = data.get("answer")
+    if answer:
+        return answer
+        
+    results = data.get("results", [])
+    if not results:
+        return f"No results found for: {query}"
+        
+    lines = [f"Tavily Search Results for: {query}\n"]
+    for i, r in enumerate(results, 1):
+        lines.append(f"{i}. {r.get('title', '')}")
+        lines.append(f"   {r.get('content', '')}")
+        lines.append(f"   {r.get('url', '')}\n")
+    
+    return "\n".join(lines).strip()
 
 
 def _ddg_search(query: str, max_results: int = 6) -> list[dict]:
@@ -74,9 +115,9 @@ def _compare(items: list[str], aspect: str) -> str:
         "Give specific facts and data."
     )
     try:
-        return _gemini_search(query)
+        return _llm_search(query)
     except Exception as e:
-        print(f"[WebSearch] ⚠️ Gemini compare failed: {e} — falling back to DDG")
+        print(f"[WebSearch] ⚠️ LLM compare failed: {e} — falling back to DDG")
 
     # DDG fallback: fetch results per item and merge
     all_results: dict[str, list] = {}
@@ -116,22 +157,32 @@ def web_search(
         player.write_log(f"[Search] {query or ', '.join(items)}")
 
     print(f"[WebSearch] 🔍 Query: {query!r}  Mode: {mode}")
-# replace: result = _gemini_search(query) block with:
+
+    if mode == "compare":
+        return _compare(items, aspect)
+
     try:
-        from or_client import client
-        result = client.chat(
-            query,
-            system="You are a web search assistant. Answer factually and concisely."
-        )
-        print("[WebSearch] ✅ OpenRouter OK.")
+        print("[WebSearch] Trying Tavily...")
+        result = _tavily_search(query)
+        print("[WebSearch] ✅ Tavily OK.")
         return result
     except Exception as e:
-        print(f"[WebSearch] ⚠️ OpenRouter failed ({e}) — trying DDG...")
-        results = _ddg_search(query)
-        result  = _format_ddg(query, results)
-        print(f"[WebSearch] ✅ DDG: {len(results)} result(s).")
-        return result
-    
-    except Exception as e:
-        print(f"[WebSearch] ❌ All backends failed: {e}")
-        return f"Search failed, sir: {e}"
+        print(f"[WebSearch] ⚠️ Tavily failed ({e}) — trying OpenRouter...")
+        try:
+            from or_client import client
+            result = client.chat(
+                query,
+                system="You are a web search assistant. Answer factually and concisely based on your general knowledge."
+            )
+            print("[WebSearch] ✅ OpenRouter OK.")
+            return result
+        except Exception as e2:
+            print(f"[WebSearch] ⚠️ OpenRouter failed ({e2}) — trying DDG...")
+            try:
+                results = _ddg_search(query)
+                result  = _format_ddg(query, results)
+                print(f"[WebSearch] ✅ DDG: {len(results)} result(s).")
+                return result
+            except Exception as e3:
+                print(f"[WebSearch] ❌ All backends failed: {e3}")
+                return f"Search failed, sir: {e3}"

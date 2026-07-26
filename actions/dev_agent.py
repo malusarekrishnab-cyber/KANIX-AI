@@ -16,17 +16,14 @@ BASE_DIR         = get_base_dir()
 API_CONFIG_PATH  = BASE_DIR / "config" / "api_keys.json"
 PROJECTS_DIR     = Path.home() / "Desktop" / "JarvisProjects"
 MAX_FIX_ATTEMPTS = 5
-MODEL_PLANNER    = "gemini-2.5-flash"
-MODEL_WRITER     = "gemini-2.5-flash"
+MODEL_PLANNER    = "qwen3:8b"
+MODEL_WRITER     = "qwen3:8b"
 
-def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
 
 
 def _get_model(model_name: str):
-    import google.generativeai as genai
-    genai.configure(api_key=_get_api_key())
+    from core.llm_provider import LLMProvider
+    
     return genai.GenerativeModel(model_name)
 
 
@@ -135,11 +132,11 @@ Critical rules:
 JSON:"""
 
     try:
-        response = model.generate_content(prompt)
-        raw = _strip_fences(response.text)
+        response = model.chat(prompt)
+        raw = _strip_fences(response.get('content', ''))
         return json.loads(raw)
     except json.JSONDecodeError as e:
-        raise ValueError(f"Planner returned invalid JSON: {e}\nRaw: {response.text[:300]}")
+        raise ValueError(f"Planner returned invalid JSON: {e}\nRaw: {response.get('content', '')[:300]}")
     except Exception as e:
         if _is_rate_limit(e):
             raise RateLimitError(str(e))
@@ -214,8 +211,8 @@ General rules:
 Code for {file_path}:"""
 
     try:
-        response = model.generate_content(prompt)
-        code = _strip_fences(response.text)
+        response = model.chat(prompt)
+        code = _strip_fences(response.get('content', ''))
 
         full_path = project_dir / file_path
         full_path.parent.mkdir(parents=True, exist_ok=True)
@@ -412,8 +409,8 @@ Rules:
 Fixed code for {fix_path}:"""
 
         try:
-            response = model.generate_content(prompt)
-            fixed = _strip_fences(response.text)
+            response = model.chat(prompt)
+            fixed = _strip_fences(response.get('content', ''))
 
             full_path = project_dir / fix_path
             full_path.parent.mkdir(parents=True, exist_ok=True)
@@ -455,7 +452,7 @@ def _build_project(
         if speak: speak(msg)
         return msg
 
-    proj_name    = project_name or plan.get("project_name", "jarvis_project")
+    proj_name    = project_name or plan.get("project_name", "kanix_project")
     proj_name    = re.sub(r"[^\w\-]", "_", proj_name)
     project_dir  = PROJECTS_DIR / proj_name
     project_dir.mkdir(parents=True, exist_ok=True)
