@@ -12,3 +12,4 @@ test.mp3
 *.log
 *.wav
 .pytest_cache/
+.venv/
