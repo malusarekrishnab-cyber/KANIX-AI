@@ -1,18 +1,21 @@
 """
-KANIX AI — Phase 3: STT module (faster-whisper, local, offline path)
+KANIX AI — STT module: dual path (Groq Whisper online, faster-whisper offline)
 
-Standalone: mic record -> faster-whisper transcribe -> text return.
-Used in offline mode (Gemini Live is online-only, so offline needs its
-own discrete record->STT->text step instead of streaming raw audio).
-
-Not yet wired into main.py — connection happens after Phase 4 (TTS),
-once the full loop exists: mic -> stt.py -> router (main AI) ->
-response -> tts.py (Kokoro) -> speaker.
+Flow: mic record -> (online? Groq Whisper key : local faster-whisper) -> text
+Both paths return a plain string, so nothing downstream needs to know which
+engine produced it (main.py just calls listen_and_transcribe()).
 """
 
+import io
+import os
+import wave
+
 import numpy as np
+import requests
 import sounddevice as sd
 from faster_whisper import WhisperModel
+
+from core.internet import is_online
 
 # ---- config -------------------------------------------------------------
 SAMPLE_RATE = 16000        # matches SEND_SAMPLE_RATE already used in main.py
@@ -23,6 +26,12 @@ MODEL_SIZE = "small"       # base struggles on Hinglish/Marathi-mixed speech;
 SILENCE_THRESHOLD = 500     # RMS-ish cutoff below which we treat audio as silence
 SILENCE_DURATION = 1.5      # seconds of silence that ends recording
 MAX_DURATION = 15           # hard cap so it never records forever
+
+# Reserved specifically for Whisper STT (never used for the brain/LLM key —
+# that's GROQ_LLM_API_KEY, see core/llm_provider.py).
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+GROQ_STT_MODEL = "whisper-large-v3-turbo"  # check Groq's current model list if this 404s
 
 _model = None
 
@@ -70,8 +79,19 @@ def record_until_silence() -> np.ndarray:
     return np.concatenate(frames).flatten()
 
 
-def transcribe(audio: np.ndarray) -> str:
-    """Run faster-whisper over an int16 mono numpy array, return text."""
+def _audio_to_wav_bytes(audio: np.ndarray) -> bytes:
+    """Pack an int16 mono numpy array into an in-memory WAV file (no temp file)."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(CHANNELS)
+        wf.setsampwidth(2)  # int16 = 2 bytes
+        wf.setframerate(SAMPLE_RATE)
+        wf.writeframes(audio.tobytes())
+    return buf.getvalue()
+
+
+def _transcribe_offline(audio: np.ndarray) -> str:
+    """Local faster-whisper path — always available, no internet needed."""
     if audio.size == 0:
         return ""
     model = _get_model()
@@ -80,8 +100,36 @@ def transcribe(audio: np.ndarray) -> str:
     return " ".join(seg.text.strip() for seg in segments).strip()
 
 
+def _transcribe_online_groq(audio: np.ndarray) -> str:
+    """Groq Whisper path — used when online and GROQ_API_KEY is set."""
+    wav_bytes = _audio_to_wav_bytes(audio)
+    files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
+    data = {"model": GROQ_STT_MODEL}
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+    resp = requests.post(GROQ_STT_URL, headers=headers, data=data, files=files, timeout=30)
+    resp.raise_for_status()
+    return (resp.json().get("text") or "").strip()
+
+
+def transcribe(audio: np.ndarray) -> str:
+    """
+    Public entry point used by both the manual test below and any code
+    that already has recorded audio in hand. Picks online/offline path.
+    """
+    if audio.size == 0:
+        return ""
+
+    if GROQ_API_KEY and is_online():
+        try:
+            return _transcribe_online_groq(audio)
+        except Exception as e:
+            print(f"[STT] ⚠️ Groq Whisper failed ({e}), falling back to local faster-whisper.")
+
+    return _transcribe_offline(audio)
+
+
 def listen_and_transcribe() -> str:
-    """Convenience wrapper: record until silence, then transcribe."""
+    """Convenience wrapper: record until silence, then transcribe (online or offline)."""
     audio = record_until_silence()
     return transcribe(audio)
 

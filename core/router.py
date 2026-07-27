@@ -2,11 +2,18 @@
 router.py — Phase 1
 
 Single source of truth for "are we online or offline right now, and
-which provider should each subsystem (main AI / vision / STT) use".
+which provider should each subsystem (main AI / vision / STT) use,
+including the specific model name for each tier."
 
-No other file should implement its own internet-check — everyone
-calls Router.get() and reads .is_online / .main_ai / .vision / .stt
-from the returned RouteState.
+Two separate concerns live here, on purpose:
+
+1. Router / RouteState — is there internet right now, at all.
+2. Provider constants + ModelRouter — given that, which exact model
+   (Gemini key #, Groq model id, Ollama model tag) each subsystem
+   should call, in priority order. core/llm_provider.py is the thing
+   that actually WALKS the fallback chain (tries tier 1, catches the
+   error, tries tier 2, etc) — this file just names the tiers so
+   there's one place to update a model name instead of five.
 
 Design notes:
 - Internet check hits a small, reliable, low-payload endpoint
@@ -42,8 +49,8 @@ _PROBE_TIMEOUT = 3  # seconds — must be short so a dead connection
 class RouteState:
     is_online: bool
     main_ai: str     # "gemini" | "ollama"
-    vision: str       # "openrouter" | "ollama"
-    stt: str          # "openrouter_whisper" | "faster_whisper"
+    vision: str       # "gemini" | "ollama"
+    stt: str          # "groq_whisper" | "faster_whisper"
 
 
 class Router:
@@ -83,8 +90,8 @@ class Router:
             return RouteState(
                 is_online=True,
                 main_ai="gemini",
-                vision="openrouter",
-                stt="openrouter_whisper",
+                vision="gemini",
+                stt="groq_whisper",
             )
         return RouteState(
             is_online=False,
@@ -113,6 +120,70 @@ class Router:
 
 # Module-level singleton — import this everywhere else.
 router = Router()
+
+
+# ---------------------------------------------------------------------
+# Provider / model constants — single place to update a model name.
+#
+# Confirmed architecture (per project owner, 2026-07-26):
+#   BRAIN     : Gemini key #1 -> Groq key #3 -> Ollama (offline)
+#   VISION    : Gemini key #2 -> Groq vision -> Ollama vision (offline)
+#   STT       : Groq Whisper key #2 -> faster-whisper (offline)
+#   TTS       : Kokoro, always local, voice af_nova (see core/tts.py)
+#
+# Groq deprecated llama-3.3-70b-versatile, llama-3.1-8b-instant,
+# llama-4-scout and llama-4-maverick as of 2026-03. Current
+# replacements per Groq's own deprecation notice are used below.
+# If Groq deprecates these too, update the two constants here —
+# nothing else needs to change.
+# ---------------------------------------------------------------------
+
+GEMINI_TEXT_MODEL = "gemini-2.5-flash"     # brain (key #1) + vision (key #2)
+GROQ_BRAIN_MODEL = "openai/gpt-oss-120b"    # brain fallback (key #3)
+GROQ_VISION_MODEL = "qwen/qwen3.6-27b"      # vision fallback (key #2, multimodal)
+OLLAMA_TEXT_MODEL = "qwen3:8b"              # brain, offline
+OLLAMA_VISION_MODEL = "qwen2.5vl:7b"        # vision, offline
+
+
+# ---------------------------------------------------------------------
+# ModelRouter / Route — used by core/llm_provider.py
+#
+# This is a DIFFERENT concern from Router above: Router decides
+# ONLINE vs OFFLINE. ModelRouter decides, given we're already calling
+# Groq as a fallback, WHICH Groq model to use for a given prompt
+# (fast/small vs smart/reasoning) based on how complex the prompt
+# looks. Kept separate from the brain/vision fallback chain above —
+# this only matters once we're already inside the "call Groq" tier.
+# ---------------------------------------------------------------------
+
+FAST_MODEL = "openai/gpt-oss-20b"
+SMART_MODEL = "openai/gpt-oss-120b"
+
+_SMART_KEYWORDS = (
+    "code", "debug", "plan", "step by step", "explain why",
+    "compare", "analyze", "reasoning", "calculate", "script",
+)
+
+
+@dataclass(frozen=True)
+class Route:
+    name: str    # "fast" | "smart" — human-readable label for logging
+    model: str   # actual Groq model id to call
+
+
+class ModelRouter:
+    """Picks which Groq model to use for a given prompt. Instantiate
+    fresh (cheap, no state) — core/llm_provider.py does `ModelRouter()`
+    per LLMProvider instance."""
+
+    def route(self, prompt: str) -> Route:
+        text = (prompt or "").lower()
+        is_long = len(prompt) > 400
+        looks_complex = any(kw in text for kw in _SMART_KEYWORDS)
+
+        if is_long or looks_complex:
+            return Route(name="smart", model=SMART_MODEL)
+        return Route(name="fast", model=FAST_MODEL)
 
 
 if __name__ == "__main__":

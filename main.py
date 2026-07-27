@@ -1,11 +1,13 @@
-import asyncio
 import threading
 import json
+import os
 import sys
 import traceback
 from pathlib import Path
 
-import sounddevice as sd
+from dotenv import load_dotenv
+load_dotenv()
+
 from google import genai
 from google.genai import types
 from ui import kanixUI
@@ -13,6 +15,9 @@ from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
     should_extract_memory, extract_memory
 )
+
+from core import stt as stt_module
+from core import tts as tts_module
 
 from actions.file_processor import file_processor
 from actions.flight_finder     import flight_finder
@@ -42,14 +47,17 @@ def get_base_dir():
 BASE_DIR        = get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
-LIVE_MODEL          = "models/gemini-2.5-flash-native-audio-preview-12-2025"
-CHANNELS            = 1
-SEND_SAMPLE_RATE    = 16000
-RECEIVE_SAMPLE_RATE = 24000
-CHUNK_SIZE          = 1024
+
+# NOTE: this is now a normal (non-Live) text+tools model, since audio
+# in/out is handled by core/stt.py (Whisper) and core/tts.py (Kokoro)
+# instead of Gemini's native-audio Live session.
+BRAIN_MODEL = "models/gemini-2.5-flash"
 
 
 def _get_api_key() -> str:
+    env_key = os.environ.get("GEMINI_API_KEY_1", "").strip()
+    if env_key:
+        return env_key
     with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
         return json.load(f)["gemini_api_key"]
 
@@ -63,13 +71,13 @@ def _load_system_prompt() -> str:
             "Be concise, direct, and always use the provided tools to complete tasks. "
             "Never simulate or guess results — always call the appropriate tool."
         )
-    
+
 _last_memory_input = ""
 
 def _update_memory_async(user_text: str, kanix_text: str) -> None:
     global _last_memory_input
 
-    user_text   = (user_text   or "").strip()
+    user_text  = (user_text  or "").strip()
     kanix_text = (kanix_text or "").strip()
 
     if len(user_text) < 5 or user_text == _last_memory_input:
@@ -87,6 +95,7 @@ def _update_memory_async(user_text: str, kanix_text: str) -> None:
     except Exception as e:
         if "429" not in str(e):
             print(f"[Memory] ⚠️ {e}")
+
 
 TOOL_DECLARATIONS = [
     {
@@ -492,28 +501,28 @@ TOOL_DECLARATIONS = [
 ]
 
 
-class kanixLive :
+class kanixLoop:
+    """
+    Turn-based loop replacing the old Gemini Live audio-to-audio session.
+
+    Flow per turn:
+        mic -> core/stt.py (faster-whisper, local)  -> text
+            -> Gemini text+tools chat (BRAIN_MODEL)  -> text (+ tool calls)
+            -> core/tts.py (Kokoro, af_nova)          -> speaker
+    """
 
     def __init__(self, ui: kanixUI):
-        self.ui             = ui
-        self.session        = None
-        self.audio_in_queue = None
-        self.out_queue      = None
-        self._loop          = None
+        self.ui     = ui
+        self.client = genai.Client(
+            api_key=_get_api_key(),
+            http_options={"api_version": "v1beta"}
+        )
+        self.chat = None
         self._is_speaking   = False
         self._speaking_lock = threading.Lock()
         self.ui.on_text_command = self._on_text_command
 
-    def _on_text_command(self, text: str):
-        if not self._loop or not self.session:
-            return
-        asyncio.run_coroutine_threadsafe(
-            self.session.send_client_content(
-                turns={"parts": [{"text": text}]},
-                turn_complete=True
-            ),
-            self._loop
-        )
+    # ---- state / speaking ------------------------------------------------
 
     def set_speaking(self, value: bool):
         with self._speaking_lock:
@@ -523,23 +532,26 @@ class kanixLive :
         elif not self.ui.muted:
             self.ui.set_state("LISTENING")
 
-    def speak(self, text: str):
-        if not self._loop or not self.session:
+    def speak(self, text: str, blocking: bool = True):
+        """Speak `text` out loud using Kokoro (replaces the old Gemini-Live voice)."""
+        if not text:
             return
-        asyncio.run_coroutine_threadsafe(
-            self.session.send_client_content(
-                turns={"parts": [{"text": text}]},
-                turn_complete=True
-            ),
-            self._loop
-        )
+        self.set_speaking(True)
+        try:
+            tts_module.speak(text, blocking=blocking)
+        except Exception as e:
+            print(f"[TTS] ⚠️ Kokoro speak failed: {e}")
+        finally:
+            self.set_speaking(False)
 
     def speak_error(self, tool_name: str, error: str):
         short = str(error)[:120]
         self.ui.write_log(f"ERR: {tool_name} — {short}")
         self.speak(f"Sir, {tool_name} encountered an error. {short}")
 
-    def _build_config(self) -> types.LiveConnectConfig:
+    # ---- chat / system prompt ---------------------------------------------
+
+    def _build_system_instruction(self) -> str:
         from datetime import datetime
 
         memory     = load_memory()
@@ -558,29 +570,21 @@ class kanixLive :
         if mem_str:
             parts.append(mem_str)
         parts.append(sys_prompt)
+        return "\n".join(parts)
 
-        return types.LiveConnectConfig(
-            response_modalities=["AUDIO"],
-            output_audio_transcription={},
-            input_audio_transcription={},
-            system_instruction="\n".join(parts),
+    def _start_chat(self):
+        config = types.GenerateContentConfig(
+            system_instruction=self._build_system_instruction(),
             tools=[{"function_declarations": TOOL_DECLARATIONS}],
-            session_resumption=types.SessionResumptionConfig(),
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Charon"
-                    )
-                )
-            ),
         )
+        self.chat = self.client.chats.create(model=BRAIN_MODEL, config=config)
 
-    async def _execute_tool(self, fc) -> types.FunctionResponse:
-        name = fc.name
-        args = dict(fc.args or {})
+    # ---- tool execution (unchanged from the Live version) -----------------
 
+    def _execute_tool(self, name: str, args: dict) -> dict:
         print(f"[JARVIS] 🔧 {name}  {args}")
         self.ui.set_state("THINKING")
+
         if name == "save_memory":
             category = args.get("category", "notes")
             key      = args.get("key", "")
@@ -590,51 +594,36 @@ class kanixLive :
                 print(f"[Memory] 💾 save_memory: {category}/{key} = {value}")
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
-            return types.FunctionResponse(
-                id=fc.id, name=name,
-                response={"result": "ok", "silent": True}
-            )
+            return {"result": "ok", "silent": True}
 
-        loop   = asyncio.get_event_loop()
         result = "Done."
-
         try:
             if name == "open_app":
-                r = await loop.run_in_executor(None, lambda: open_app(parameters=args, response=None, player=self.ui))
-                result = r or f"Opened {args.get('app_name')}."
+                result = open_app(parameters=args, response=None, player=self.ui) or f"Opened {args.get('app_name')}."
 
             elif name == "weather_report":
-                r = await loop.run_in_executor(None, lambda: weather_action(parameters=args, player=self.ui))
-                result = r or "Weather delivered."
+                result = weather_action(parameters=args, player=self.ui) or "Weather delivered."
 
             elif name == "browser_control":
-                r = await loop.run_in_executor(None, lambda: browser_control(parameters=args, player=self.ui))
-                result = r or "Done."
+                result = browser_control(parameters=args, player=self.ui) or "Done."
 
             elif name == "file_controller":
-                r = await loop.run_in_executor(None, lambda: file_controller(parameters=args, player=self.ui))
-                result = r or "Done."
+                result = file_controller(parameters=args, player=self.ui) or "Done."
 
             elif name == "send_message":
-                r = await loop.run_in_executor(None, lambda: send_message(parameters=args, response=None, player=self.ui, session_memory=None))
-                result = r or f"Message sent to {args.get('receiver')}."
+                result = send_message(parameters=args, response=None, player=self.ui, session_memory=None) \
+                    or f"Message sent to {args.get('receiver')}."
 
             elif name == "reminder":
-                r = await loop.run_in_executor(None, lambda: reminder(parameters=args, response=None, player=self.ui))
-                result = r or "Reminder set."
+                result = reminder(parameters=args, response=None, player=self.ui) or "Reminder set."
 
             elif name == "youtube_video":
-                r = await loop.run_in_executor(None, lambda: youtube_video(parameters=args, response=None, player=self.ui))
-                result = r or "Done."
+                result = youtube_video(parameters=args, response=None, player=self.ui) or "Done."
+
             elif name == "file_processor":
                 if not args.get("file_path") and self.ui.current_file:
                     args["file_path"] = self.ui.current_file
-                r = await loop.run_in_executor(
-                    None,
-                    lambda: file_processor(parameters=args, player=self.ui, speak=self.speak)
-                )
-                result = r or "Done."
-
+                result = file_processor(parameters=args, player=self.ui, speak=self.speak) or "Done."
 
             elif name == "screen_process":
                 threading.Thread(
@@ -646,20 +635,16 @@ class kanixLive :
                 result = "Vision module activated. Stay completely silent — vision module will speak directly."
 
             elif name == "computer_settings":
-                r = await loop.run_in_executor(None, lambda: computer_settings(parameters=args, response=None, player=self.ui))
-                result = r or "Done."
+                result = computer_settings(parameters=args, response=None, player=self.ui) or "Done."
 
             elif name == "desktop_control":
-                r = await loop.run_in_executor(None, lambda: desktop_control(parameters=args, player=self.ui))
-                result = r or "Done."
+                result = desktop_control(parameters=args, player=self.ui) or "Done."
 
             elif name == "code_helper":
-                r = await loop.run_in_executor(None, lambda: code_helper(parameters=args, player=self.ui, speak=self.speak))
-                result = r or "Done."
+                result = code_helper(parameters=args, player=self.ui, speak=self.speak) or "Done."
 
             elif name == "dev_agent":
-                r = await loop.run_in_executor(None, lambda: dev_agent(parameters=args, player=self.ui, speak=self.speak))
-                result = r or "Done."
+                result = dev_agent(parameters=args, player=self.ui, speak=self.speak) or "Done."
 
             elif name == "agent_task":
                 from agent.task_queue import get_queue, TaskPriority
@@ -669,30 +654,28 @@ class kanixLive :
                 result   = f"Task started (ID: {task_id})."
 
             elif name == "web_search":
-                r = await loop.run_in_executor(None, lambda: web_search_action(parameters=args, player=self.ui))
-                result = r or "Done."
+                result = web_search_action(parameters=args, player=self.ui) or "Done."
 
             elif name == "computer_control":
-                r = await loop.run_in_executor(None, lambda: computer_control(parameters=args, player=self.ui))
-                result = r or "Done."
+                result = computer_control(parameters=args, player=self.ui) or "Done."
 
             elif name == "game_updater":
-                r = await loop.run_in_executor(None, lambda: game_updater(parameters=args, player=self.ui, speak=self.speak))
-                result = r or "Done."
+                result = game_updater(parameters=args, player=self.ui, speak=self.speak) or "Done."
 
             elif name == "flight_finder":
-                r = await loop.run_in_executor(None, lambda: flight_finder(parameters=args, player=self.ui))
-                result = r or "Done."
+                result = flight_finder(parameters=args, player=self.ui) or "Done."
+
             elif name == "shutdown_kanix":
                 self.ui.write_log("SYS: Shutdown requested.")
                 self.speak("Goodbye, sir.")
 
                 def _shutdown():
-                    import time, sys, os
+                    import time
                     time.sleep(1)
                     os._exit(0)
 
                 threading.Thread(target=_shutdown, daemon=True).start()
+
             else:
                 result = f"Unknown tool: {name}"
 
@@ -705,177 +688,97 @@ class kanixLive :
             self.ui.set_state("LISTENING")
 
         print(f"[JARVIS] 📤 {name} → {str(result)[:80]}")
+        return {"result": result}
 
-        return types.FunctionResponse(
-            id=fc.id, name=name,
-            response={"result": result}
-        )
+    # ---- one full turn: send text, resolve tool calls, speak final text ---
 
-    async def _send_realtime(self):
-        while True:
-            msg = await self.out_queue.get()
-            await self.session.send_realtime_input(media=msg)
+    def _handle_user_text(self, user_text: str):
+        if not user_text or not user_text.strip():
+            return
+        if self.chat is None:
+            self._start_chat()
 
-    async def _listen_audio(self):
-        print("[JARVIS] 🎤 Mic started")
-        loop = asyncio.get_event_loop()
-
-        def callback(indata, frames, time_info, status):
-            with self._speaking_lock:
-                jarvis_speaking = self._is_speaking
-            if not jarvis_speaking and not self.ui.muted:
-                data = indata.tobytes()
-                loop.call_soon_threadsafe(
-                    self.out_queue.put_nowait,
-                    {"data": data, "mime_type": "audio/pcm"}
-                )
+        self.ui.write_log(f"You: {user_text}")
+        self.ui.set_state("THINKING")
 
         try:
-            with sd.InputStream(
-                samplerate=SEND_SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype="int16",
-                blocksize=CHUNK_SIZE,
-                callback=callback,
-            ):
-                print("[JARVIS] 🎤 Mic stream open")
-                while True:
-                    await asyncio.sleep(0.1)
+            response = self.chat.send_message(user_text)
         except Exception as e:
-            print(f"[JARVIS] ❌ Mic: {e}")
-            raise
-
-    async def _receive_audio(self):
-        print("[JARVIS] 👂 Recv started")
-        out_buf, in_buf = [], []
-
-        try:
-            while True:
-                async for response in self.session.receive():
-
-                    if response.data:
-                        self.audio_in_queue.put_nowait(response.data)
-
-                    if response.server_content:
-                        sc = response.server_content
-
-                        if sc.output_transcription and sc.output_transcription.text:
-                            self.set_speaking(True)
-                            txt = sc.output_transcription.text.strip()
-                            if txt:
-                                out_buf.append(txt)
-
-                        if sc.input_transcription and sc.input_transcription.text:
-                            txt = sc.input_transcription.text.strip()
-                            if txt:
-                                in_buf.append(txt)
-
-                        if sc.turn_complete:
-                            self.set_speaking(False)
-
-                            full_in = " ".join(in_buf).strip()
-                            if full_in:
-                                self.ui.write_log(f"You: {full_in}")
-                            in_buf = []
-
-                            full_out = " ".join(out_buf).strip()
-                            if full_out:
-                                self.ui.write_log(f"Jarvis: {full_out}")
-                            out_buf = []
-
-                            if full_in and len(full_in) > 5:
-                                threading.Thread(
-                                    target=_update_memory_async,
-                                    args=(full_in, full_out),
-                                    daemon=True
-                                ).start()
-
-                    if response.tool_call:
-                        fn_responses = []
-                        for fc in response.tool_call.function_calls:
-                            print(f"[JARVIS] 📞 {fc.name}")
-                            fr = await self._execute_tool(fc)
-                            fn_responses.append(fr)
-                        await self.session.send_tool_response(
-                            function_responses=fn_responses
-                        )
-
-        except Exception as e:
-            print(f"[JARVIS] ❌ Recv: {e}")
+            print(f"[JARVIS] ❌ send_message: {e}")
             traceback.print_exc()
-            raise
+            self.speak_error("brain", e)
+            return
 
-    async def _play_audio(self):
-        print("[JARVIS] 🔊 Play started")
-        loop = asyncio.get_event_loop()
+        # Resolve any function calls the model asked for, looping until
+        # it returns a final text answer (models can chain multiple tools).
+        guard = 0
+        while getattr(response, "function_calls", None) and guard < 8:
+            guard += 1
+            function_response_parts = []
+            for fc in response.function_calls:
+                tool_result = self._execute_tool(fc.name, dict(fc.args or {}))
+                function_response_parts.append(
+                    types.Part.from_function_response(
+                        name=fc.name,
+                        response=tool_result,
+                    )
+                )
+            try:
+                response = self.chat.send_message(function_response_parts)
+            except Exception as e:
+                print(f"[JARVIS] ❌ send_message (tool response): {e}")
+                traceback.print_exc()
+                self.speak_error("brain", e)
+                return
 
-        stream = sd.RawOutputStream(
-            samplerate=RECEIVE_SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype="int16",
-            blocksize=CHUNK_SIZE,
-        )
-        stream.start()
-        try:
-            while True:
-                chunk = await self.audio_in_queue.get()
-                self.set_speaking(True)
-                await asyncio.to_thread(stream.write, chunk)
-        except Exception as e:
-            print(f"[JARVIS] ❌ Play: {e}")
-            raise
-        finally:
-            self.set_speaking(False)
-            stream.stop()
-            stream.close()
+        final_text = (getattr(response, "text", "") or "").strip()
+        if final_text:
+            self.ui.write_log(f"Jarvis: {final_text}")
+            self.speak(final_text)
 
-    async def run(self):
-        client = genai.Client(
-            api_key=_get_api_key(),
-            http_options={"api_version": "v1beta"}
-        )
+        if len(user_text) > 5:
+            threading.Thread(
+                target=_update_memory_async,
+                args=(user_text, final_text),
+                daemon=True
+            ).start()
 
+    def _on_text_command(self, text: str):
+        """Typed command from the UI box — same pipeline as voice, minus STT."""
+        threading.Thread(target=self._handle_user_text, args=(text,), daemon=True).start()
+
+    # ---- main loop: record -> transcribe -> handle -----------------------
+
+    def run_turn(self):
+        self.ui.set_state("LISTENING")
+        text = stt_module.listen_and_transcribe()
+        if not text or not text.strip():
+            return
+        self._handle_user_text(text)
+
+    def run_forever(self):
+        if self.chat is None:
+            self._start_chat()
+        self.ui.set_state("LISTENING")
+        self.ui.write_log("SYS: KANIX online (Whisper in / Kokoro out).")
         while True:
             try:
-                print("[JARVIS] 🔌 Connecting...")
-                self.ui.set_state("THINKING")
-                config = self._build_config()
-
-                async with (
-                    client.aio.live.connect(model=LIVE_MODEL, config=config) as session,
-                    asyncio.TaskGroup() as tg,
-                ):
-                    self.session        = session
-                    self._loop          = asyncio.get_event_loop()
-                    self.audio_in_queue = asyncio.Queue()
-                    self.out_queue      = asyncio.Queue(maxsize=10)
-
-                    print("[JARVIS] ✅ Connected.")
-                    self.ui.set_state("LISTENING")
-                    self.ui.write_log("SYS: KANIX online.")
-
-                    tg.create_task(self._send_realtime())
-                    tg.create_task(self._listen_audio())
-                    tg.create_task(self._receive_audio())
-                    tg.create_task(self._play_audio())
-                    
+                if not self.ui.muted:
+                    self.run_turn()
             except Exception as e:
                 print(f"[JARVIS] ⚠️ {e}")
                 traceback.print_exc()
+                self.ui.set_state("THINKING")
 
-            self.set_speaking(False)
-            self.ui.set_state("THINKING")
-            print("[JARVIS] 🔄 Reconnecting in 3s...")
-            await asyncio.sleep(3)
 
 def main():
     ui = kanixUI("face.png")
 
     def runner():
         ui.wait_for_api_key()
-        jarvis = kanixLive (ui)
+        jarvis = kanixLoop(ui)
         try:
-            asyncio.run(jarvis.run())
+            jarvis.run_forever()
         except KeyboardInterrupt:
             print("\n🔴 Shutting down...")
 

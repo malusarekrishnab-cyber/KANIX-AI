@@ -26,7 +26,7 @@ from pathlib import Path
 from datetime import datetime
 
 from core.llm_provider import LLMProvider
-from core.stt import speech_to_text
+
 
 
 

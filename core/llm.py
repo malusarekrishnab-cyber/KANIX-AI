@@ -11,7 +11,8 @@ def get_groq_client():
 class GroqLLM:
     def __init__(self):
         self.client = get_groq_client()
-        self.model = "llama-3.3-70b-versatile"
+        # llama-3.3-70b-versatile was deprecated by Groq on 2026-06-17.
+        self.model = "openai/gpt-oss-120b"
         
     def chat(self, prompt: str, system: str = "", tools: list = None) -> dict:
         messages = []

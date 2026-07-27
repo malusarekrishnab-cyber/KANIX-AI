@@ -1,24 +1,29 @@
 """
-KANIX AI — Phase 4: TTS module (Kokoro, local, mode-independent)
+KANIX AI — TTS module (Kokoro, local, mode-independent)
 
 This module is ALWAYS local — it does not check router.py's online/offline
 state, because Kokoro runs on-device regardless of internet availability.
-That "mode shouldn't matter" assumption from the build prompt is verified
-by the __main__ test block below (run it once with wifi on, once with
-wifi off — output must sound identical).
 
-Output format matches main.py's existing playback stream exactly, so this
-can later be dropped into _play_audio() with zero resampling:
-    - sample rate : 24000 Hz   (== RECEIVE_SAMPLE_RATE in main.py)
-    - channels    : 1 (mono)   (== CHANNELS in main.py)
-    - dtype       : int16      (== sd.RawOutputStream dtype in main.py)
-
-Not yet wired into main.py — that happens after the full loop
-(mic -> stt.py -> router -> AI response -> tts.py -> speaker) is built,
-per the plan.
+Two things fixed here vs the first version:
+  1. Speed  — huggingface_hub was doing a HEAD request to huggingface.co on
+     EVERY speak() call to check for model updates, even though the model
+     is already cached locally. That round-trip is what caused the delay.
+     We set HF_HUB_OFFLINE once the model is confirmed cached, so it loads
+     straight from disk with zero network calls.
+  2. Volume — Kokoro's raw output amplitude is quiet by default. We now
+     normalize each utterance to a target peak before converting to int16,
+     instead of blindly multiplying by 32767.
 """
 
+import os
 import sys
+
+# Must be set BEFORE importing kokoro / huggingface_hub, so the very first
+# lookup in this process skips the network check. If the model has never
+# been downloaded before, unset this (or delete the HF cache) and run once
+# online first — after that this stays fast and fully offline.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 import numpy as np
 import sounddevice as sd
 from kokoro import KPipeline
@@ -27,45 +32,56 @@ from kokoro import KPipeline
 VOICE = "af_nova"        # fixed per build prompt
 LANG_CODE = "a"          # 'a' = American English (af_nova is an 'a' voice)
 SAMPLE_RATE = 24000       # Kokoro's native output rate; matches main.py
+REPO_ID = "hexgrad/Kokoro-82M"
 
-# KPipeline is somewhat heavy to init (loads model weights), so we build
-# it once and reuse it across calls instead of per-utterance.
+TARGET_PEAK = 0.95        # normalize each utterance so its loudest sample
+                           # hits ~95% of full scale (fixes "voice is too quiet")
+
 _pipeline = None
 
 
 def _get_pipeline() -> KPipeline:
     global _pipeline
     if _pipeline is None:
-        _pipeline = KPipeline(lang_code=LANG_CODE)
+        try:
+            _pipeline = KPipeline(lang_code=LANG_CODE, repo_id=REPO_ID)
+        except Exception:
+            # First-ever run: nothing cached yet, HF_HUB_OFFLINE=1 would
+            # block the initial download. Retry once with it off.
+            os.environ["HF_HUB_OFFLINE"] = "0"
+            _pipeline = KPipeline(lang_code=LANG_CODE, repo_id=REPO_ID)
+            os.environ["HF_HUB_OFFLINE"] = "1"
     return _pipeline
 
 
 def synthesize(text: str, voice: str = VOICE) -> np.ndarray:
     """
     Run Kokoro over `text` and return a single concatenated int16 mono
-    numpy array at SAMPLE_RATE. Does not play anything — pure synthesis,
-    so main.py can later push the array straight into its existing
-    audio_in_queue instead of calling sd.play directly.
+    numpy array at SAMPLE_RATE, normalized to TARGET_PEAK.
     """
     pipeline = _get_pipeline()
-    chunks = []
+    float_chunks = []
     for _graphemes, _phonemes, audio in pipeline(text, voice=voice):
-        # Kokoro yields float32 audio in [-1, 1]; convert to int16 to match
-        # main.py's RawOutputStream(dtype="int16") playback format.
-        chunk = np.asarray(audio, dtype=np.float32)
-        chunk = np.clip(chunk, -1.0, 1.0)
-        chunks.append((chunk * 32767).astype(np.int16))
+        float_chunks.append(np.asarray(audio, dtype=np.float32))
 
-    if not chunks:
+    if not float_chunks:
         return np.zeros(0, dtype=np.int16)
-    return np.concatenate(chunks)
+
+    full = np.concatenate(float_chunks)
+
+    # Normalize: scale so the loudest sample hits TARGET_PEAK, instead of
+    # assuming the raw output already uses the full [-1, 1] range.
+    peak = float(np.max(np.abs(full))) if full.size else 0.0
+    if peak > 1e-6:
+        full = full * (TARGET_PEAK / peak)
+    full = np.clip(full, -1.0, 1.0)
+
+    return (full * 32767).astype(np.int16)
 
 
 def speak(text: str, voice: str = VOICE, blocking: bool = True) -> None:
     """
     Synthesize `text` and play it out loud on the default output device.
-    Standalone helper for testing this module before it's wired into
-    main.py's playback queue.
     """
     audio = synthesize(text, voice=voice)
     if audio.size == 0:
