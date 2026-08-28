@@ -115,46 +115,6 @@ code_helper
 dev_agent
   description: string (required)
   language: string (optional)
-EXAMPLES:
-
-Goal: "research mechanical engineering and save it to a notepad file"
-Steps:
-
-web_search | query: "mechanical engineering overview definition history"
-web_search | query: "mechanical engineering applications and future trends"
-file_controller | action: write, path: desktop, name: mechanical_engineering.txt, content: "MECHANICAL ENGINEERING RESEARCH\n\nThis file will be filled with web research results."
-cmd_control | task: "open mechanical_engineering.txt on desktop with notepad"
-
-Goal: "What is the price of Bitcoin"
-Steps:
-
-web_search | query: "Bitcoin price today USD"
-
-Goal: "List the files on the desktop and find the largest 5 files"
-Steps:
-
-file_controller | action: list, path: desktop
-file_controller | action: largest, path: desktop, count: 5
-
-Goal: "Install PUBG from Steam"
-Steps:
-
-game_updater | action: install, platform: steam, game_name: "PUBG"
-
-Goal: "Update all my Steam games"
-Steps:
-
-game_updater | action: update, platform: steam
-
-Goal: "Send John a message on WhatsApp saying there is a meeting tomorrow"
-Steps:
-
-send_message | receiver: John, message_text: "There is a meeting tomorrow", platform: WhatsApp
-
-Goal: "Open the clock and set a reminder for 30 minutes later"
-Steps:
-
-reminder | date: [today], time: [now+30min], message: "Reminder"
 
 OUTPUT — return ONLY valid JSON, no markdown, no explanation, no code blocks:
 {
@@ -172,12 +132,15 @@ OUTPUT — return ONLY valid JSON, no markdown, no explanation, no code blocks:
 """
 
 
-
-
 def create_plan(goal: str, context: str = "") -> dict:
     from core.llm_provider import LLMProvider
     
-    model = LLMProvider().strip()
+    try:
+        model = LLMProvider()
+        prompt = f"{PLANNER_PROMPT}\n\nGoal: \"{goal}\"\nContext: \"{context}\""
+        res = model.chat(prompt)
+        text = res.get("content", "").strip()
+        text = re.sub(r"```(?:json)?", "", text).strip().rstrip("`").strip()
 
         plan = json.loads(text)
 
@@ -224,15 +187,20 @@ def _fallback_plan(goal: str) -> dict:
 def replan(goal: str, completed_steps: list, failed_step: dict, error: str) -> dict:
     from core.llm_provider import LLMProvider
     
-    model = LLMProvider().strip()
-        plan     = json.loads(text)
+    try:
+        model = LLMProvider()
+        prompt = f"Goal: {goal}\nFailed step: {failed_step}\nError: {error}\nGenerate updated JSON plan."
+        res = model.chat(prompt)
+        text = res.get("content", "").strip()
+        text = re.sub(r"```(?:json)?", "", text).strip().rstrip("`").strip()
+        plan = json.loads(text)
 
         for step in plan.get("steps", []):
             if step.get("tool") == "generated_code":
                 step["tool"] = "web_search"
                 step["parameters"] = {"query": step.get("description", goal)[:200]}
 
-        print(f"[Planner] 🔄 Revised plan: {len(plan['steps'])} steps")
+        print(f"[Planner] 🔄 Revised plan: {len(plan.get('steps', []))} steps")
         return plan
     except Exception as e:
         print(f"[Planner] ⚠️ Replan failed: {e}")

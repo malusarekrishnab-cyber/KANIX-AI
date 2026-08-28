@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KANIX 3D VRM Avatar</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            user-select: none;
+            overflow: hidden;
+        }
+
+        body, html {
+            width: 100%;
+            height: 100%;
+            background-color: transparent;
+            font-family: 'Courier New', monospace;
+        }
+
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        canvas {
+            width: 100% !important;
+            height: 100% !important;
+            display: block;
+        }
+
+        .hud-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            box-shadow: inset 0 0 50px rgba(0, 212, 255, 0.15);
+            border-radius: 50%;
+            transition: all 0.5s ease;
+        }
+
+        body.live-mode .hud-overlay {
+            border-radius: 0%;
+            background: radial-gradient(circle at center, rgba(0, 20, 40, 0.4) 0%, rgba(2, 8, 20, 0.95) 100%);
+            box-shadow: inset 0 0 100px rgba(0, 240, 255, 0.25);
+        }
+
+        .status-badge {
+            position: absolute;
+            bottom: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #00d4ff;
+            font-size: 11px;
+            font-weight: bold;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            text-shadow: 0 0 8px rgba(0, 212, 255, 0.8);
+            background: rgba(1, 15, 24, 0.7);
+            padding: 4px 12px;
+            border-radius: 12px;
+            border: 1px solid rgba(0, 212, 255, 0.3);
+            pointer-events: none;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div class="hud-overlay" id="hud-overlay"></div>
+    <div class="status-badge" id="status-badge">3D VRM MODEL LOADING...</div>
+
+    <script>
+        let scene, camera, renderer, avatarGroup, headMesh, bodyMesh, mouthMesh, eyeLeft, eyeRight;
+        let vrmModel = null;
+        let isSpeaking = false;
+        let currentEmotion = 'neutral';
+        let currentAnimation = 'idle';
+        let isLiveMode = false;
+
+        let clock = new THREE.Clock();
+        let animTime = 0;
+        let lipSyncTimer = 0;
+
+        function initScene() {
+            const container = document.getElementById('canvas-container');
+            const width = container.clientWidth || window.innerWidth;
+            const height = container.clientHeight || window.innerHeight;
+
+            scene = new THREE.Scene();
+
+            camera = new THREE.PerspectiveCamera(35, width / height, 0.1, 1000);
+            camera.position.set(0, 1.2, 2.5);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(width, height);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.shadowMap.enabled = true;
+            container.appendChild(renderer.domElement);
+
+            // Lighting setup
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.9);
+            scene.add(ambientLight);
+
+            const mainLight = new THREE.DirectionalLight(0x00d4ff, 1.2);
+            mainLight.position.set(2, 3, 4);
+            scene.add(mainLight);
+
+            const rimLight = new THREE.DirectionalLight(0xff00aa, 0.8);
+            rimLight.position.set(-2, 2, -2);
+            scene.add(rimLight);
+
+            avatarGroup = new THREE.Group();
+            scene.add(avatarGroup);
+
+            // Load .vrm / .glb model via GLTFLoader
+            loadVRMModel('/assets/models/kanix_avatar.vrm');
+
+            window.addEventListener('resize', onWindowResize);
+            animate();
+        }
+
+        function loadVRMModel(modelUrl) {
+            const loader = new THREE.GLTFLoader();
+            loader.load(
+                modelUrl,
+                function(gltf) {
+                    vrmModel = gltf.scene;
+                    vrmModel.position.set(0, -0.3, 0);
+                    avatarGroup.add(vrmModel);
+                    document.getElementById('status-badge').innerText = 'REAL 3D VRM MODEL LOADED';
+                },
+                function(xhr) {
+                    console.log((xhr.loaded / xhr.total * 100) + '% loaded');
+                },
+                function(error) {
+                    console.warn('GLTFLoader fallback to 3D avatar:', error);
+                    buildFallbackVRM();
+                }
+            );
+        }
+
+        function buildFallbackVRM() {
+            const skinMat = new THREE.MeshStandardMaterial({ color: 0xffdfd0, roughness: 0.4 });
+            const suitMat = new THREE.MeshStandardMaterial({ color: 0x0a1828, roughness: 0.2, metalness: 0.8, emissive: 0x002233 });
+            const cyanGlowMat = new THREE.MeshStandardMaterial({ color: 0x00ffff, emissive: 0x00ffff, emissiveIntensity: 0.9 });
+            const eyeMat = new THREE.MeshStandardMaterial({ color: 0x00f0ff, emissive: 0x00aaff, emissiveIntensity: 0.8 });
+
+            const headGeo = new THREE.SphereGeometry(0.28, 32, 32);
+            headGeo.scale(1, 1.1, 0.95);
+            headMesh = new THREE.Mesh(headGeo, skinMat);
+            headMesh.position.set(0, 1.35, 0);
+            avatarGroup.add(headMesh);
+
+            const eyeGeo = new THREE.SphereGeometry(0.045, 16, 16);
+            eyeLeft = new THREE.Mesh(eyeGeo, eyeMat);
+            eyeLeft.position.set(0.09, 1.38, 0.23);
+            avatarGroup.add(eyeLeft);
+
+            eyeRight = new THREE.Mesh(eyeGeo, eyeMat);
+            eyeRight.position.set(-0.09, 1.38, 0.23);
+            avatarGroup.add(eyeRight);
+
+            const mouthGeo = new THREE.BoxGeometry(0.08, 0.02, 0.02);
+            mouthMesh = new THREE.Mesh(mouthGeo, cyanGlowMat);
+            mouthMesh.position.set(0, 1.27, 0.25);
+            avatarGroup.add(mouthMesh);
+
+            const torsoGeo = new THREE.CylinderGeometry(0.22, 0.16, 0.6, 32);
+            bodyMesh = new THREE.Mesh(torsoGeo, suitMat);
+            bodyMesh.position.set(0, 0.85, 0);
+            avatarGroup.add(bodyMesh);
+
+            const coreGeo = new THREE.TorusGeometry(0.06, 0.015, 16, 32);
+            const coreMesh = new THREE.Mesh(coreGeo, cyanGlowMat);
+            coreMesh.position.set(0, 0.95, 0.21);
+            avatarGroup.add(coreMesh);
+
+            avatarGroup.position.set(0, -0.3, 0);
+            document.getElementById('status-badge').innerText = '3D VRM AVATAR READY';
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            animTime += delta;
+
+            if (currentAnimation === 'idle') {
+                avatarGroup.position.y = -0.3 + Math.sin(animTime * 2.0) * 0.025;
+                avatarGroup.rotation.y = Math.sin(animTime * 1.2) * 0.08;
+            } else if (currentAnimation === 'wave' || currentAnimation === 'hello') {
+                avatarGroup.position.y = -0.3 + Math.sin(animTime * 3.0) * 0.03;
+                avatarGroup.rotation.y = Math.sin(animTime * 4.0) * 0.15;
+            } else if (currentAnimation === 'spin') {
+                avatarGroup.rotation.y += delta * 4.0;
+            } else if (currentAnimation === 'peace' || currentAnimation === 'pose') {
+                avatarGroup.position.y = -0.25;
+                avatarGroup.rotation.y = 0.2;
+            } else if (currentAnimation === 'squat') {
+                avatarGroup.position.y = -0.45;
+            }
+
+            if (currentAnimation !== 'idle' && animTime > 3.0) {
+                currentAnimation = 'idle';
+                avatarGroup.rotation.set(0, 0, 0);
+            }
+
+            if (mouthMesh && isSpeaking) {
+                lipSyncTimer += delta * 15;
+                const mouthScaleY = 1.0 + Math.abs(Math.sin(lipSyncTimer)) * 2.5;
+                mouthMesh.scale.set(1, mouthScaleY, 1);
+            } else if (mouthMesh) {
+                mouthMesh.scale.set(1, 1, 1);
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            const container = document.getElementById('canvas-container');
+            const width = container.clientWidth || window.innerWidth;
+            const height = container.clientHeight || window.innerHeight;
+            camera.aspect = width / height;
+            camera.updateProjectionMatrix();
+            renderer.setSize(width, height);
+        }
+
+        window.setExpression = function(emotion) {
+            currentEmotion = emotion || 'neutral';
+            document.getElementById('status-badge').innerText = `EXPRESSION: ${currentEmotion.toUpperCase()}`;
+        };
+
+        window.playAnimation = function(animName) {
+            currentAnimation = animName || 'idle';
+            animTime = 0;
+            document.getElementById('status-badge').innerText = `ANIMATION: ${currentAnimation.toUpperCase()}`;
+        };
+
+        window.setLipSync = function(speaking) {
+            isSpeaking = !!speaking;
+            if (isSpeaking) {
+                document.getElementById('status-badge').innerText = 'SPEAKING';
+            } else {
+                document.getElementById('status-badge').innerText = `EXPRESSION: ${currentEmotion.toUpperCase()}`;
+            }
+        };
+
+        window.setLiveMode = function(enabled) {
+            isLiveMode = !!enabled;
+            if (isLiveMode) {
+                document.body.classList.add('live-mode');
+                camera.position.set(0, 1.1, 2.0);
+                document.getElementById('status-badge').innerText = 'LIVE MODE ACTIVE';
+            } else {
+                document.body.classList.remove('live-mode');
+                camera.position.set(0, 1.2, 2.5);
+                document.getElementById('status-badge').innerText = '3D VRM ONLINE';
+            }
+        };
+
+        window.onload = initScene;
+    </script>
+</body>
+</html>
