@@ -49,8 +49,6 @@ Return ONLY valid JSON:
 """
 
 
-
-
 def analyze_error(
     step: dict,
     error: str,
@@ -59,21 +57,6 @@ def analyze_error(
 ) -> dict:
     """
     Analyzes a failed step and returns a recovery decision.
-
-    Args:
-        step         : The step dict that failed
-        error        : Error message/traceback
-        attempt      : Current attempt number
-        max_attempts : How many times we've already tried
-
-    Returns:
-        {
-            "decision": ErrorDecision,
-            "reason": str,
-            "fix_suggestion": str,
-            "max_retries": int,
-            "user_message": str
-        }
     """
     from core.llm_provider import LLMProvider
     if attempt >= max_attempts:
@@ -86,8 +69,12 @@ def analyze_error(
             "user_message":  "Trying a different approach, sir."
         }
 
-    
-    model = LLMProvider().strip()
+    try:
+        model = LLMProvider()
+        prompt = f"{ERROR_ANALYST_PROMPT}\nStep: {json.dumps(step)}\nError: {error}"
+        res = model.chat(prompt)
+        text = res.get("content", "").strip()
+        text = re.sub(r"```(?:json)?", "", text).strip().rstrip("`").strip()
 
         result = json.loads(text)
         decision_str = result.get("decision", "replan").lower()
@@ -98,7 +85,6 @@ def analyze_error(
             "abort":  ErrorDecision.ABORT,
         }
         result["decision"] = decision_map.get(decision_str, ErrorDecision.REPLAN)
-
 
         if step.get("critical") and result["decision"] == ErrorDecision.SKIP:
             result["decision"]     = ErrorDecision.REPLAN
@@ -121,9 +107,7 @@ def analyze_error(
 def generate_fix(step: dict, error: str, fix_suggestion: str) -> dict:
     """
     When decision is REPLAN and a fix suggestion exists,
-    generates a replacement step using generated_code as fallback.
-
-    Returns a modified step dict.
+    generates a replacement step using code_helper as fallback.
     """
     from core.llm_provider import LLMProvider
     

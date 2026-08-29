@@ -22,7 +22,6 @@ BASE_DIR        = get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 
 
-
 def _run_generated_code(description: str, speak: Callable | None = None) -> str:
     from core.llm_provider import LLMProvider
     if speak:
@@ -42,8 +41,12 @@ def _run_generated_code(description: str, speak: Callable | None = None) -> str:
         except Exception:
             pass
 
-    
-    model = LLMProvider().strip()
+    try:
+        model = LLMProvider()
+        prompt = f"Write a standalone Python script to accomplish: {description}\nReturn ONLY executable Python code."
+        res = model.chat(prompt)
+        code = res.get("content", "").strip()
+        code = re.sub(r"```(?:python)?", "", code).strip().rstrip("`").strip()
 
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".py", delete=False, encoding="utf-8"
@@ -82,6 +85,11 @@ def _run_generated_code(description: str, speak: Callable | None = None) -> str:
     except Exception as e:
         raise RuntimeError(f"Generated code failed: {e}")
 
+
+def _translate_to_goal_language(text: str, goal: str) -> str:
+    return text
+
+
 def _inject_context(params: dict, tool: str, step_results: dict, goal: str = "") -> dict:
     if not step_results:
         return params
@@ -102,21 +110,83 @@ def _inject_context(params: dict, tool: str, step_results: dict, goal: str = "")
                 print(f"[Executor] 💉 Injected + translated content")
 
     return params
-def _detect_language(text: str) -> str:
-    from core.llm_provider import LLMProvider
-    
-    model = LLMProvider()
-            steps_str = "\n".join(f"- {s.get('description', '')}" for s in completed_steps)
-            prompt    = (
-                f'User goal: "{goal}"\n'
-                f"Completed steps:\n{steps_str}\n\n"
-                "Write a single natural sentence summarizing what was accomplished. "
-                "Address the user as 'sir'. Be direct and positive."
-            )
-            response = model.chat(prompt)
-            summary  = response.get('content', '').strip()
-            if speak: speak(summary)
-            return summary
-        except Exception:
-            if speak: speak(fallback)
-            return fallback
+
+
+class AgentExecutor:
+    def __init__(self):
+        pass
+
+    def _execute_tool(self, tool: str, params: dict, speak: Callable | None = None) -> str:
+        print(f"[Executor] Executing tool: {tool} args={params}")
+        if tool == "web_search":
+            from actions.web_search import web_search
+            return web_search(parameters=params) or "Search completed."
+        elif tool == "file_controller":
+            from actions.file_controller import file_controller
+            return file_controller(parameters=params) or "File action completed."
+        elif tool == "open_app":
+            from actions.open_app import open_app
+            return open_app(parameters=params) or f"Opened {params.get('app_name')}."
+        elif tool == "code_helper":
+            from actions.code_helper import code_helper
+            return code_helper(parameters=params, speak=speak) or "Code helper finished."
+        elif tool == "computer_control":
+            from actions.computer_control import computer_control
+            return computer_control(parameters=params) or "Computer action completed."
+        elif tool == "generated_code":
+            return _run_generated_code(params.get("description", ""), speak=speak)
+        else:
+            return f"Tool '{tool}' executed with params {params}."
+
+    def execute(
+        self,
+        goal: str,
+        speak: Callable | None = None,
+        cancel_flag: threading.Event | None = None,
+    ) -> str:
+        print(f"[Executor] Starting execution for goal: {goal}")
+        plan = create_plan(goal)
+        steps = plan.get("steps", [])
+        step_results = {}
+        completed_steps = []
+
+        for step in steps:
+            if cancel_flag and cancel_flag.is_set():
+                return "Task cancelled by user."
+
+            step_id = step.get("step")
+            tool = step.get("tool", "web_search")
+            desc = step.get("description", "")
+            params = _inject_context(step.get("parameters", {}), tool, step_results, goal)
+
+            print(f"[Executor] Step {step_id}: [{tool}] {desc}")
+            if speak:
+                speak(f"Step {step_id}: {desc}")
+
+            try:
+                res = self._execute_tool(tool, params, speak=speak)
+                step_results[step_id] = res
+                completed_steps.append(step)
+            except Exception as e:
+                err_msg = str(e)
+                print(f"[Executor] Step {step_id} failed: {err_msg}")
+                decision_info = analyze_error(step, err_msg)
+                decision = decision_info.get("decision", ErrorDecision.REPLAN)
+                if decision == ErrorDecision.SKIP:
+                    continue
+                elif decision == ErrorDecision.ABORT:
+                    raise RuntimeError(f"Task aborted at step {step_id}: {err_msg}")
+                else:
+                    fixed_step = generate_fix(step, err_msg, decision_info.get("fix_suggestion", ""))
+                    res = self._execute_tool(
+                        fixed_step.get("tool", "web_search"),
+                        fixed_step.get("parameters", {}),
+                        speak=speak,
+                    )
+                    step_results[step_id] = res
+                    completed_steps.append(step)
+
+        summary = f"Completed goal: {goal}"
+        if speak:
+            speak(summary)
+        return summary
