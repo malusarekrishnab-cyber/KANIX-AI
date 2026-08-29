@@ -119,102 +119,14 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "query": {"type": "STRING", "description": "Search query"},
-                "mode": {"type": "STRING", "description": "search or compare"}
+                "query": {"type": "STRING", "description": "Search query"}
             },
             "required": ["query"]
         }
     },
     {
-        "name": "weather_report",
-        "description": "Gives the weather report to user",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "city": {"type": "STRING", "description": "City name"}
-            },
-            "required": ["city"]
-        }
-    },
-    {
-        "name": "send_message",
-        "description": "Sends a text message via WhatsApp, Telegram, etc.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "receiver": {"type": "STRING", "description": "Recipient contact name"},
-                "message_text": {"type": "STRING", "description": "Message text"},
-                "platform": {"type": "STRING", "description": "Platform"}
-            },
-            "required": ["receiver", "message_text", "platform"]
-        }
-    },
-    {
-        "name": "reminder",
-        "description": "Sets a timed reminder.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "date": {"type": "STRING", "description": "Date YYYY-MM-DD"},
-                "time": {"type": "STRING", "description": "Time HH:MM"},
-                "message": {"type": "STRING", "description": "Reminder text"}
-            },
-            "required": ["date", "time", "message"]
-        }
-    },
-    {
-        "name": "youtube_video",
-        "description": "Controls YouTube.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {"type": "STRING", "description": "play | summarize | get_info | trending"},
-                "query": {"type": "STRING", "description": "Query"}
-            },
-            "required": []
-        }
-    },
-    {
-        "name": "screen_process",
-        "description": "Captures and analyzes the screen or webcam image.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "angle": {"type": "STRING", "description": "'screen' or 'camera'"},
-                "text": {"type": "STRING", "description": "Question"}
-            },
-            "required": ["text"]
-        }
-    },
-    {
-        "name": "computer_settings",
-        "description": "Controls computer settings.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {"type": "STRING", "description": "Action"},
-                "description": {"type": "STRING", "description": "Description"},
-                "value": {"type": "STRING", "description": "Value"}
-            },
-            "required": []
-        }
-    },
-    {
-        "name": "browser_control",
-        "description": "Controls web browser.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {"type": "STRING", "description": "Action"},
-                "url": {"type": "STRING", "description": "URL"},
-                "query": {"type": "STRING", "description": "Query"}
-            },
-            "required": ["action"]
-        }
-    },
-    {
         "name": "file_controller",
-        "description": "Manages files and folders.",
+        "description": "Manages files and folders safely.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
@@ -225,127 +137,9 @@ TOOL_DECLARATIONS = [
         }
     },
     {
-        "name": "desktop_control",
-        "description": "Controls the desktop.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {"type": "STRING", "description": "Action"}
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "code_helper",
-        "description": "Writes, edits, explains, or runs code.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {"type": "STRING", "description": "Action"},
-                "description": {"type": "STRING", "description": "Description"}
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "dev_agent",
-        "description": "Builds complete projects.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "description": {"type": "STRING", "description": "Description"}
-            },
-            "required": ["description"]
-        }
-    },
-    {
-        "name": "agent_task",
-        "description": "Executes complex multi-step tasks.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "goal": {"type": "STRING", "description": "Goal"}
-            },
-            "required": ["goal"]
-        }
-    },
-    {
-        "name": "computer_control",
-        "description": "Direct computer control.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {"type": "STRING", "description": "Action"}
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "game_updater",
-        "description": "Game updater for Steam and Epic.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {"type": "STRING", "description": "Action"}
-            },
-            "required": []
-        }
-    },
-    {
-        "name": "flight_finder",
-        "description": "Searches Google Flights.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "origin": {"type": "STRING", "description": "Origin"},
-                "destination": {"type": "STRING", "description": "Destination"},
-                "date": {"type": "STRING", "description": "Date"}
-            },
-            "required": ["origin", "destination", "date"]
-        }
-    },
-    {
-        "name": "job_agent",
-        "description": "Searches and applies to jobs adhering strictly to safety and eligibility rules.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {"type": "STRING", "description": "search | apply | list_applications"},
-                "query": {"type": "STRING", "description": "Job title or query"},
-                "otp_code": {"type": "STRING", "description": "OTP authorization code"}
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "file_processor",
-        "description": "Processes uploaded or dropped files.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "file_path": {"type": "STRING", "description": "File path"},
-                "action": {"type": "STRING", "description": "Action"}
-            },
-            "required": []
-        }
-    },
-    {
         "name": "shutdown_kanix",
         "description": "Shuts down the assistant completely.",
         "parameters": {"type": "OBJECT", "properties": {}}
-    },
-    {
-        "name": "save_memory",
-        "description": "Save personal facts to memory.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "category": {"type": "STRING", "description": "Category"},
-                "key": {"type": "STRING", "description": "Key"},
-                "value": {"type": "STRING", "description": "Value"}
-            },
-            "required": ["category", "key", "value"]
-        }
     }
 ]
 
@@ -387,6 +181,7 @@ class kanixLoop:
     def speak_error(self, tool_name: str, error: str):
         short = str(error)[:120]
         self.ui.write_log(f"ERR: {tool_name} — {short}")
+        self.ui.trigger_vrm_expression("sad")
         self.speak(f"Sir, {tool_name} encountered an error. {short}")
 
     def _build_system_instruction(self) -> str:
@@ -404,118 +199,6 @@ class kanixLoop:
             tools=[{"function_declarations": TOOL_DECLARATIONS}],
         )
         self.chat = self.client.chats.create(model=BRAIN_MODEL, config=config)
-
-    def _execute_tool(self, name: str, args: dict) -> dict:
-        print(f"[JARVIS] 🔧 {name}  {args}")
-        self.ui.set_state("THINKING")
-
-        if name == "save_memory":
-            category = args.get("category", "notes")
-            key      = args.get("key", "")
-            value    = args.get("value", "")
-            if key and value:
-                update_memory({category: {key: {"value": value}}})
-                print(f"[Memory] 💾 save_memory: {category}/{key} = {value}")
-            if not self.ui.muted:
-                self.ui.set_state("LISTENING")
-            return {"result": "ok", "silent": True}
-
-        result = "Done."
-        try:
-            if name == "open_app":
-                result = open_app(parameters=args, response=None, player=self.ui) or f"Opened {args.get('app_name')}."
-
-            elif name == "weather_report":
-                result = weather_action(parameters=args, player=self.ui) or "Weather delivered."
-
-            elif name == "browser_control":
-                result = browser_control(parameters=args, player=self.ui) or "Done."
-
-            elif name == "file_controller":
-                result = file_controller(parameters=args, player=self.ui) or "Done."
-
-            elif name == "send_message":
-                result = send_message(parameters=args, response=None, player=self.ui, session_memory=None) \
-                    or f"Message sent to {args.get('receiver')}."
-
-            elif name == "reminder":
-                result = reminder(parameters=args, response=None, player=self.ui) or "Reminder set."
-
-            elif name == "youtube_video":
-                result = youtube_video(parameters=args, response=None, player=self.ui) or "Done."
-
-            elif name == "file_processor":
-                if not args.get("file_path") and self.ui.current_file:
-                    args["file_path"] = self.ui.current_file
-                result = file_processor(parameters=args, player=self.ui, speak=self.speak) or "Done."
-
-            elif name == "screen_process":
-                threading.Thread(
-                    target=screen_process,
-                    kwargs={"parameters": args, "response": None,
-                            "player": self.ui, "session_memory": None},
-                    daemon=True
-                ).start()
-                result = "Vision module activated."
-
-            elif name == "computer_settings":
-                result = computer_settings(parameters=args, response=None, player=self.ui) or "Done."
-
-            elif name == "desktop_control":
-                result = desktop_control(parameters=args, player=self.ui) or "Done."
-
-            elif name == "code_helper":
-                result = code_helper(parameters=args, player=self.ui, speak=self.speak) or "Done."
-
-            elif name == "dev_agent":
-                result = dev_agent(parameters=args, player=self.ui, speak=self.speak) or "Done."
-
-            elif name == "job_agent":
-                result = job_agent_action(parameters=args) or "Done."
-
-            elif name == "agent_task":
-                from agent.task_queue import get_queue, TaskPriority
-                priority_map = {"low": TaskPriority.LOW, "normal": TaskPriority.NORMAL, "high": TaskPriority.HIGH}
-                priority = priority_map.get(args.get("priority", "normal").lower(), TaskPriority.NORMAL)
-                task_id  = get_queue().submit(goal=args.get("goal", ""), priority=priority, speak=self.speak)
-                result   = f"Task started (ID: {task_id})."
-
-            elif name == "web_search":
-                result = web_search_action(parameters=args, player=self.ui) or "Done."
-
-            elif name == "computer_control":
-                result = computer_control(parameters=args, player=self.ui) or "Done."
-
-            elif name == "game_updater":
-                result = game_updater(parameters=args, player=self.ui, speak=self.speak) or "Done."
-
-            elif name == "flight_finder":
-                result = flight_finder(parameters=args, player=self.ui) or "Done."
-
-            elif name == "shutdown_kanix":
-                self.ui.write_log("SYS: Shutdown requested.")
-                self.speak("Goodbye, sir.")
-
-                def _shutdown():
-                    import time
-                    time.sleep(1)
-                    os._exit(0)
-
-                threading.Thread(target=_shutdown, daemon=True).start()
-
-            else:
-                result = f"Unknown tool: {name}"
-
-        except Exception as e:
-            result = f"Tool '{name}' failed: {e}"
-            traceback.print_exc()
-            self.speak_error(name, e)
-
-        if not self.ui.muted:
-            self.ui.set_state("LISTENING")
-
-        print(f"[JARVIS] 📤 {name} → {str(result)[:80]}")
-        return {"result": result}
 
     def _handle_user_text(self, user_text: str):
         if not user_text or not user_text.strip():
@@ -535,12 +218,15 @@ class kanixLoop:
                 self.speak("Entering live mode.")
                 return
 
-        # Voice Trigger Check for VRM Animations & Expressions
-        if "hello" in cmd or "wave" in cmd:
+        # Expanded Voice Trigger Check for VRM Animations & Expressions
+        if "hello" in cmd or "wave" in cmd or "say hello" in cmd:
             self.ui.trigger_vrm_animation("wave")
             self.ui.trigger_vrm_expression("happy")
         elif "spin" in cmd:
             self.ui.trigger_vrm_animation("spin")
+        elif "dance" in cmd:
+            self.ui.trigger_vrm_animation("dance")
+            self.ui.trigger_vrm_expression("happy")
         elif "peace" in cmd:
             self.ui.trigger_vrm_animation("peace")
             self.ui.trigger_vrm_expression("happy")
@@ -548,6 +234,8 @@ class kanixLoop:
             self.ui.trigger_vrm_animation("squat")
         elif "pose" in cmd:
             self.ui.trigger_vrm_animation("pose")
+        elif "stop animation" in cmd or "look at me" in cmd:
+            self.ui.trigger_vrm_animation("idle")
 
         if "happy" in cmd:
             self.ui.trigger_vrm_expression("happy")
@@ -567,6 +255,7 @@ class kanixLoop:
 
         try:
             response = self.chat.send_message(user_text)
+            self.ui.trigger_vrm_expression("neutral")
         except Exception as e:
             print(f"[JARVIS] ❌ send_message: {e}")
             traceback.print_exc()
